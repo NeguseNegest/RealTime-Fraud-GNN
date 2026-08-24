@@ -1,4 +1,4 @@
-"""Train GraphSAGE on leakage-safe temporal graph snapshots."""
+"""Here I train GraphSAGE on temporal graph snapshots."""
 
 import argparse
 from pathlib import Path
@@ -27,13 +27,6 @@ default_checkpoint_path = Path(__file__).resolve().parents[2] / "artifacts" / "g
 
 def create_neighbor_loader(snapshot, num_neighbors=(25, 10), batch_size=512, shuffle=False):
     """Sample labelled seed nodes and two hops of historical neighbors."""
-    if not hasattr(snapshot, "target_mask"):
-        raise ValueError("snapshot must have a target_mask attribute")
-    if not hasattr(snapshot, "time_step"):
-        raise ValueError("snapshot must have a time_step attribute")
-    if len(num_neighbors) != 2 or any(count <= 0 for count in num_neighbors):
-        raise ValueError("two positive neighbor counts are required")
-
     return NeighborLoader(
         snapshot,
         input_nodes=snapshot.target_mask,
@@ -45,7 +38,6 @@ def create_neighbor_loader(snapshot, num_neighbors=(25, 10), batch_size=512, shu
 
 
 def train_one_epoch(model, loader, optimizer, device):
-    """Optimize cross-entropy over sampled seed nodes."""
     model.train()
     total_loss = 0.0
     total_seed_nodes = 0
@@ -59,9 +51,6 @@ def train_one_epoch(model, loader, optimizer, device):
         optimizer.step()
         total_loss += loss.item() * batch.batch_size
         total_seed_nodes += batch.batch_size
-
-    if total_seed_nodes == 0:
-        raise ValueError("training loader produced no seed nodes")
     return total_loss / total_seed_nodes
 
 
@@ -77,9 +66,6 @@ def evaluate_pr_auc(model, loader, device):
         logits, _ = model(batch.x, batch.edge_index)
         probabilities.append(torch.softmax(logits[: batch.batch_size], dim=1)[:, 1].cpu())
         labels.append(batch.y[: batch.batch_size].cpu())
-
-    if not labels:
-        raise ValueError("evaluation loader produced no seed nodes")
     return float(average_precision_score(torch.cat(labels).numpy(), torch.cat(probabilities).numpy()))
 
 
@@ -95,14 +81,8 @@ def train_graphsage(
     weight_decay=5e-4,
     seed=42,
     device="auto",
-    verbose=True,
 ):
     """Train GraphSAGE and restore the model from its best validation epoch."""
-    if epochs <= 0 or batch_size <= 0:
-        raise ValueError("epochs and batch_size must be positive")
-    if learning_rate <= 0 or weight_decay < 0:
-        raise ValueError("learning_rate must be positive and weight_decay cannot be negative")
-
     device = resolve_device(device)
     torch.manual_seed(seed)
     train_snapshot = build_temporal_snapshot(data, train_period[1], train_period)
@@ -111,7 +91,6 @@ def train_graphsage(
     validation_loader = create_neighbor_loader(validation_snapshot, num_neighbors, batch_size)
     model = GraphSAGEClassifier(data.num_node_features, hidden_channels, embedding_dim, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    history = []
     best_epoch = 0
     best_val_pr_auc = float("-inf")
     best_state = None
@@ -119,9 +98,7 @@ def train_graphsage(
     for epoch in range(1, epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
         val_pr_auc = evaluate_pr_auc(model, validation_loader, device)
-        history.append({"epoch": epoch, "train_loss": train_loss, "val_pr_auc": val_pr_auc})
-        if verbose:
-            print(f"Epoch {epoch:02d} | Loss: {train_loss:.4f} | Val PR-AUC: {val_pr_auc:.4f}")
+        print(f"Epoch {epoch:02d} | Loss: {train_loss:.4f} | Val PR-AUC: {val_pr_auc:.4f}")
         if val_pr_auc > best_val_pr_auc:
             best_epoch = epoch
             best_val_pr_auc = val_pr_auc
@@ -129,40 +106,32 @@ def train_graphsage(
 
     model.load_state_dict(best_state)
     model.to(device)
-    return {"model": model, "history": history, "best_epoch": best_epoch, "best_val_pr_auc": best_val_pr_auc}
+    return {"model": model, "best_epoch": best_epoch, "best_val_pr_auc": best_val_pr_auc}
 
 
-def save_encoder_checkpoint(encoder, path=default_checkpoint_path, metadata=None):
-    """Save portable CPU encoder weights and reconstruction metadata."""
+def save_encoder_checkpoint(encoder, path=default_checkpoint_path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "encoder_state_dict": {name: value.detach().cpu() for name, value in encoder.state_dict().items()},
         "encoder_config": encoder.configuration(),
-        "metadata": metadata or {},
     }
     torch.save(checkpoint, path)
     return path
 
 
 def load_encoder_checkpoint(path=default_checkpoint_path, device="cpu"):
-    """Load an encoder checkpoint produced by this module."""
     device = resolve_device(device)
     checkpoint = torch.load(path, map_location=device, weights_only=True)
     encoder = GraphSAGEEncoder(**checkpoint["encoder_config"])
     encoder.load_state_dict(checkpoint["encoder_state_dict"])
-    return encoder.to(device), checkpoint.get("metadata", {})
+    return encoder.to(device)
 
 
 def resolve_device(device):
-    if isinstance(device, torch.device):
-        return device
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise ValueError("CUDA was requested but is not available")
-    return device
+    return torch.device(device)
 
 
 def parse_args():
@@ -186,13 +155,7 @@ def main():
         num_neighbors=tuple(args.num_neighbors),
         device=args.device,
     )
-    metadata = {
-        "epochs": args.epochs,
-        "num_neighbors": tuple(args.num_neighbors),
-        "best_epoch": result["best_epoch"],
-        "best_val_pr_auc": result["best_val_pr_auc"],
-    }
-    checkpoint_path = save_encoder_checkpoint(result["model"].encoder, args.checkpoint, metadata)
+    checkpoint_path = save_encoder_checkpoint(result["model"].encoder, args.checkpoint)
     print(f"Best validation PR-AUC: {result['best_val_pr_auc']:.4f}")
     print(f"Restored epoch: {result['best_epoch']}")
     print(f"Encoder checkpoint: {checkpoint_path}")

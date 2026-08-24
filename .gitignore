@@ -1,2 +1,8 @@
 src/data/exploratory.py
-/projectplan.tex
+projectplan.tex
+.venv/
+data/raw/
+artifacts/
+**/.ipynb_checkpoints/
+**/__pycache__/
+*.py[cod]

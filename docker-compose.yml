@@ -7,6 +7,11 @@ services:
       - "127.0.0.1:5001:5000"
     volumes:
       - mlflow_data:/mlflow
+  kafka:
+    image: apache/kafka:4.3.0
+    container_name: fraud-gnn-kafka
+    ports:
+      - "127.0.0.1:9092:9092"
 
 volumes:
   mlflow_data:

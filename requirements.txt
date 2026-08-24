@@ -1,5 +1,6 @@
 --find-links https://data.pyg.org/whl/torch-2.2.0+cpu.html
 
+mlflow==3.15.1
 torch==2.2.2
 torch-geometric==2.8.0
 pyg-lib==0.4.0+pt22

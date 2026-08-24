@@ -26,13 +26,7 @@ default_checkpoint_path = Path(__file__).resolve().parents[2] / "artifacts" / "g
 
 
 def create_neighbor_loader(snapshot, num_neighbors=(25, 10), batch_size=512, shuffle=False):
-    """Sample labelled seed nodes and two hops of historical neighbors."""
-    return NeighborLoader(
-        snapshot,
-        input_nodes=snapshot.target_mask,
-        num_neighbors=list(num_neighbors),
-        batch_size=batch_size,
-        shuffle=shuffle,
+    return NeighborLoader(snapshot,input_nodes=snapshot.target_mask,num_neighbors=list(num_neighbors),batch_size=batch_size,shuffle=shuffle,
         time_attr="time_step",
     )
 
@@ -56,7 +50,6 @@ def train_one_epoch(model, loader, optimizer, device):
 
 @torch.no_grad()
 def evaluate_pr_auc(model, loader, device):
-    """Evaluate illicit-class average precision over sampled seed nodes."""
     model.eval()
     probabilities = []
     labels = []
@@ -69,20 +62,9 @@ def evaluate_pr_auc(model, loader, device):
     return float(average_precision_score(torch.cat(labels).numpy(), torch.cat(probabilities).numpy()))
 
 
-def train_graphsage(
-    data,
-    epochs=10,
-    batch_size=512,
-    num_neighbors=(25, 10),
-    hidden_channels=128,
-    embedding_dim=64,
-    dropout=0.5,
-    learning_rate=0.001,
-    weight_decay=5e-4,
-    seed=42,
-    device="auto",
+def train_graphsage(data,epochs=10,batch_size=512,num_neighbors=(25, 10),hidden_channels=128,embedding_dim=64,
+                    dropout=0.5,learning_rate=0.001,weight_decay=5e-4,seed=42,device="auto",
 ):
-    """Train GraphSAGE and restore the model from its best validation epoch."""
     device = resolve_device(device)
     torch.manual_seed(seed)
     train_snapshot = build_temporal_snapshot(data, train_period[1], train_period)

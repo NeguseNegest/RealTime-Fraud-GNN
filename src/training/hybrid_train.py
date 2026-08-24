@@ -44,9 +44,9 @@ def combine_features(raw_features, embeddings):
 
     return np.concatenate((raw_features, embeddings), axis=1)
 
-def train_hybrid_model(features, labels):
+def train_hybrid_model(features, labels, tree_depth=6):
 
-    model = XGBClassifier(objective="binary:logistic", eval_metric="logloss", random_state=42, n_jobs=1)
+    model = XGBClassifier(objective="binary:logistic", eval_metric="logloss", max_depth=tree_depth, random_state=42, n_jobs=1)
 
     with threadpool_limits(limits=1):
         model.fit(features, labels)
@@ -60,7 +60,7 @@ def evaluate_hybrid_model(model, features, labels, threshold=alert_threshold):
     return classification_metrics(labels, probabilities, threshold)
 
 
-def run_hybrid_training(data, encoder, num_neighbors=(25, 10), batch_size=512, device="auto"):
+def run_hybrid_training(data, encoder, num_neighbors=(25, 10), batch_size=512, tree_depth=6, device="auto"):
 
     torch.manual_seed(42)
     train_snapshot = build_temporal_snapshot(data, train_period[1], train_period)
@@ -74,7 +74,7 @@ def run_hybrid_training(data, encoder, num_neighbors=(25, 10), batch_size=512, d
 
     val_features = combine_features(val_raw, val_embeddings)
     test_features = combine_features(test_raw, test_embeddings)
-    hybrid_model = train_hybrid_model(train_features, train_labels)
+    hybrid_model = train_hybrid_model(train_features, train_labels, tree_depth)
     hybrid_validation = evaluate_hybrid_model(hybrid_model, val_features, val_labels)
     hybrid_test = evaluate_hybrid_model(hybrid_model, test_features, test_labels)
     baseline_model = train_baseline(data)
@@ -92,6 +92,7 @@ def parse_args():
     parser.add_argument("--encoder-checkpoint", type=Path, default=default_checkpoint_path)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-neighbors", type=int, nargs=2, default=(25, 10))
+    parser.add_argument("--tree-depth", type=int, default=6)
     parser.add_argument("--device", type=str, default="auto")
 
     return parser.parse_args()
@@ -102,7 +103,7 @@ def main():
     args = parse_args()
     data = load_elliptic_data(args.data_root)
     encoder = load_encoder_checkpoint(args.encoder_checkpoint, args.device)
-    result = run_hybrid_training(data=data, encoder=encoder, num_neighbors=tuple(args.num_neighbors), batch_size=args.batch_size, device=args.device)
+    result = run_hybrid_training(data=data, encoder=encoder, num_neighbors=tuple(args.num_neighbors), batch_size=args.batch_size, tree_depth=args.tree_depth, device=args.device)
     print(f"Hybrid feature count: {result['num_features']}")
     print(f"Validation baseline PR-AUC: {result['baseline_validation']['pr_auc']:.4f}")
     print(f"Validation hybrid PR-AUC:   {result['hybrid_validation']['pr_auc']:.4f}")

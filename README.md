@@ -11,18 +11,21 @@
 ## Table of contents
 
 - [About the project](#about-the-project)
+- [Exploratory notebook](#exploratory-notebook)
 - [Dataset](#dataset)
 - [How it works](#how-it-works)
+- [Architecture](#architecture)
 - [Results](#results)
 - [Screenshots](#screenshots)
 - [Project structure](#project-structure)
 - [How to run the project](#how-to-run-the-project)
-- [Exploratory notebook](#exploratory-notebook)
 - [Limitations](#limitations)
 
 ## About the project
 
 This project is mainly a way for me to learn about fraud detection with graph-based methods, an area I was not familiar with before starting the project. I first train an XGBoost baseline using normal transaction features and then train GraphSAGE to learn information from the transaction graph.
+
+The [exploratory notebook](src/data/exploratory.ipynb) is a good place to start. It shows how the ideas developed before they were moved into separate Python files.
 
 The main experiment is whether concatenating GraphSAGE embeddings with the original transaction features improves the detection of illicit transactions. The final classifier is an XGBoost model trained on both types of features.
 
@@ -30,9 +33,21 @@ I also added a small Kafka service to practise working with event streams and si
 
 This is a learning and portfolio project, not a production AML system.
 
+## Exploratory notebook
+
+The notebook covers the temporal split, baseline, GraphSAGE training, hybrid model and a small streaming example. Its outputs are already saved so it can be inspected without rerunning the full graph experiment.
+
+```bash
+jupyter notebook src/data/exploratory.ipynb
+```
+
 ## Dataset
 
 The project uses the [Elliptic Bitcoin Dataset](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set), provided through PyTorch Geometric. Transactions are represented as nodes and payment flows as directed edges. The labels are licit, illicit or unknown.
+
+The graph below shows the transactions from timestep 32. Unknown transactions are blue, licit transactions are green and illicit transactions are red.
+
+![Elliptic transaction graph at timestep 32](docs/images/elliptic-time-step-32.png)
 
 Only the 93 transaction-local features are used. The 72 neighbour-aggregate features supplied with the dataset are excluded because those aggregates may not be available for a newly arriving transaction.
 
@@ -57,7 +72,23 @@ Unknown labels are excluded from supervised training and evaluation. Graph snaps
 7. MLflow stores the GraphSAGE encoder, XGBoost model and threshold together.
 8. Kafka sends test-period transactions to a consumer that rebuilds graph context and scores each transaction.
 
-The simplified architecture is available in [docs/architecture.mermaid](docs/architecture.mermaid).
+## Architecture
+
+```mermaid
+flowchart LR
+    data[Elliptic dataset] --> training[Train GraphSAGE and XGBoost]
+    training --> mlflow[(MLflow)]
+    data --> producer[Kafka producer]
+    producer --> kafka[(Kafka topic)]
+    kafka --> consumer[Kafka consumer]
+    mlflow --> consumer
+    consumer --> scoring[Score transaction]
+    scoring --> decision{Above threshold?}
+    decision -- Yes --> alert[AML review and SHAP explanation]
+    decision -- No --> next[Wait for next transaction]
+```
+
+The Mermaid source is also available in [docs/architecture.mermaid](docs/architecture.mermaid).
 
 ## Results
 
@@ -74,7 +105,7 @@ The GraphSAGE pre-training validation AP was 0.9394. The hybrid model selected a
 | ---: | ---: | ---: |
 | 0.8206 | 0.6759 | 0.7413 |
 
-The hybrid model did not outperform the baseline in this run. Its test AP was slightly lower, so the experiment did not support my original hypothesis. This is still a useful result: the local Elliptic features were already strong, and a basic GraphSAGE setup did not automatically add useful predictive information. I kept this result rather than presenting the hybrid model as an improvement.
+The hybrid model did not outperform the baseline in this run. Its test AP was slightly lower, so the experiment did not support my original hypothesis. This is still a useful result: the local Elliptic features were already strong and a basic GraphSAGE setup did not automatically add useful predictive information. I kept this result rather than presenting the hybrid model as an improvement.
 
 These values come from one temporal split and one random seed, so they should not be treated as a general comparison between GraphSAGE and XGBoost.
 
@@ -198,14 +229,6 @@ Use a new `--group-id` when repeating the demo if you want Kafka to read the top
 
 ```bash
 docker compose down
-```
-
-## Exploratory notebook
-
-The notebook contains the original exploration that led to the Python modules. It covers the temporal split, baseline, GraphSAGE training, hybrid model and a small streaming example. Its outputs are already saved, so it can be inspected without rerunning the full graph experiment.
-
-```bash
-jupyter notebook src/data/exploratory.ipynb
 ```
 
 ## Limitations

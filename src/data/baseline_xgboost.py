@@ -12,7 +12,6 @@ from threadpoolctl import threadpool_limits
 from xgboost import XGBClassifier
 
 
-alert_threshold = 0.20
 threshold_grid = (0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.85)
 
 
@@ -25,7 +24,7 @@ def train_baseline(data):
     return model
 
 
-def evaluate_baseline(model, data, mask_name="test_mask", threshold=alert_threshold):
+def evaluate_baseline(model, data, mask_name="test_mask", threshold=0.5):
     """I evaluate the baseline against one temporal split."""
     mask = getattr(data, mask_name)
     labels = data.y[mask].numpy()
@@ -41,11 +40,22 @@ def evaluate_thresholds(model, data, thresholds=threshold_grid):
     return {threshold: classification_metrics(labels, probabilities, threshold) for threshold in thresholds}
 
 
+def select_threshold(labels, probabilities, thresholds=threshold_grid):
+    results = {threshold: classification_metrics(labels, probabilities, threshold) for threshold in thresholds}
+    return max(results, key=lambda threshold: results[threshold]["f1"])
+
+
+def select_baseline_threshold(model, data, thresholds=threshold_grid):
+    labels = data.y[data.val_mask].numpy()
+    probabilities = model.predict_proba(data.x[data.val_mask].numpy())[:, 1]
+    return select_threshold(labels, probabilities, thresholds)
+
+
 def classification_metrics(labels, probabilities, threshold):
-    """Here we calculate PR-AUC"""
+    """Calculate average precision and threshold metrics."""
     predictions = (probabilities >= threshold).astype(int)
     return {
-        "pr_auc": float(average_precision_score(labels, probabilities)),
+        "average_precision": float(average_precision_score(labels, probabilities)),
         "precision": float(precision_score(labels, predictions, zero_division=0)),
         "recall": float(recall_score(labels, predictions, zero_division=0)),
         "f1": float(f1_score(labels, predictions, zero_division=0)),
@@ -56,13 +66,14 @@ def classification_metrics(labels, probabilities, threshold):
 def main():
     data = load_elliptic_data()
     model = train_baseline(data)
-    validation_metrics = evaluate_baseline(model, data, mask_name="val_mask")
-    test_metrics = evaluate_baseline(model, data)
+    threshold = select_baseline_threshold(model, data)
+    validation_metrics = evaluate_baseline(model, data, mask_name="val_mask", threshold=threshold)
+    test_metrics = evaluate_baseline(model, data, threshold=threshold)
 
     print("Training complete")
-    print(f"Validation PR-AUC: {validation_metrics['pr_auc']:.4f}")
-    print(f"Test PR-AUC: {test_metrics['pr_auc']:.4f}")
-    print(f"Threshold:   {alert_threshold:.2f}")
+    print(f"Validation average precision: {validation_metrics['average_precision']:.4f}")
+    print(f"Test average precision:       {test_metrics['average_precision']:.4f}")
+    print(f"Threshold:   {threshold:.2f}")
     print(f"Precision:   {test_metrics['precision']:.4f}")
     print(f"Recall:      {test_metrics['recall']:.4f}")
     print(f"F1:          {test_metrics['f1']:.4f}")

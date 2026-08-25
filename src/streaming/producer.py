@@ -1,4 +1,5 @@
 import argparse
+import heapq
 import json
 from pathlib import Path
 import sys
@@ -14,31 +15,59 @@ from src.data.loader import default_data_root, load_elliptic_data, test_period
 
 default_topic = "aml-transactions"
 default_bootstrap_servers = "localhost:9092"
+schema_version = 2
 
 
 def create_producer(bootstrap_servers):
     return KafkaProducer(bootstrap_servers=bootstrap_servers)
 
 
-def get_test_node_ids(data, limit=0):
+def prepare_test_stream(data, limit=0):
     start, end = test_period
     node_ids = ((data.time_step >= start) & (data.time_step <= end)).nonzero(as_tuple=False).view(-1).tolist()
-    node_ids.sort(key=lambda node_id: (int(data.time_step[node_id]), node_id))
+    selected = set(node_ids)
+    incoming_neighbors = {node_id: [] for node_id in node_ids}
+    outgoing_neighbors = {node_id: [] for node_id in node_ids}
+    source_nodes, target_nodes = data.edge_index.tolist()
+
+    for source, target in zip(source_nodes, target_nodes):
+        if source in selected and target in selected:
+            incoming_neighbors[target].append(source)
+            outgoing_neighbors[source].append(target)
+
+    indegree = {node_id: len(incoming_neighbors[node_id]) for node_id in node_ids}
+    queue = [(int(data.time_step[node_id]), node_id) for node_id in node_ids if indegree[node_id] == 0]
+    heapq.heapify(queue)
+    ordered = []
+
+    while queue:
+        _, node_id = heapq.heappop(queue)
+        ordered.append(node_id)
+        for target in outgoing_neighbors[node_id]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                heapq.heappush(queue, (int(data.time_step[target]), target))
+
     if limit:
-        return node_ids[:limit]
+        ordered = ordered[:limit]
+    return ordered, incoming_neighbors
+
+
+def get_test_node_ids(data, limit=0):
+    node_ids, _ = prepare_test_stream(data, limit)
     return node_ids
 
 
-def build_event(data, node_id):
-    return {"node_id": node_id, "time_step": int(data.time_step[node_id]), "features": data.x[node_id].tolist()}
+def build_event(data, node_id, incoming_neighbors):
+    return {"schema_version": schema_version, "node_id": node_id, "time_step": int(data.time_step[node_id]), "features": data.x[node_id].tolist(), "incoming_neighbors": incoming_neighbors[node_id]}
 
 
 def publish_transactions(data, producer, topic=default_topic, delay=0.01, limit=0):
-    node_ids = get_test_node_ids(data, limit)
+    node_ids, incoming_neighbors = prepare_test_stream(data, limit)
     started = time.perf_counter()
 
     for node_id in node_ids:
-        event = build_event(data, node_id)
+        event = build_event(data, node_id, incoming_neighbors)
         producer.send(topic, key=str(node_id).encode("utf-8"), value=json.dumps(event).encode("utf-8"))
         time.sleep(delay)
 

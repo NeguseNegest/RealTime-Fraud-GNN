@@ -5,9 +5,10 @@ from torch_geometric.datasets import EllipticBitcoinDataset
 
 
 default_data_root = Path(__file__).resolve().parents[2] / "data" / "raw" / "elliptic"
+local_feature_count = 93
 train_period = (1, 30)  # I use timesteps 1-30 for training
 validation_period = (31, 34)  # This small validation window is a limitation
-test_period = (35, 49) #test
+test_period = (35, 49)  # test
 
 
 def add_temporal_masks(data, time_step):
@@ -36,6 +37,7 @@ def _period_mask(time_step, period):
 def load_elliptic_data(root=default_data_root):
     dataset = EllipticBitcoinDataset(root=str(root))
     data = dataset[0].clone()
+    data.x = data.x[:, :local_feature_count]
     features = pd.read_csv(dataset.raw_paths[0], header=None)
     time_step = torch.tensor(features[1].to_numpy(), dtype=torch.long)
     return add_temporal_masks(data, time_step)

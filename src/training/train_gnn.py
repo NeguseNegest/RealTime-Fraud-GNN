@@ -26,9 +26,7 @@ default_checkpoint_path = Path(__file__).resolve().parents[2] / "artifacts" / "g
 
 
 def create_neighbor_loader(snapshot, num_neighbors=(25, 10), batch_size=512, shuffle=False):
-    return NeighborLoader(snapshot,input_nodes=snapshot.target_mask,num_neighbors=list(num_neighbors),batch_size=batch_size,shuffle=shuffle,
-        time_attr="time_step",
-    )
+    return NeighborLoader(snapshot, input_nodes=snapshot.target_mask, num_neighbors=list(num_neighbors), batch_size=batch_size, shuffle=shuffle, time_attr="time_step")
 
 
 def train_one_epoch(model, loader, optimizer, device):
@@ -49,7 +47,7 @@ def train_one_epoch(model, loader, optimizer, device):
 
 
 @torch.no_grad()
-def evaluate_pr_auc(model, loader, device):
+def evaluate_average_precision(model, loader, device):
     model.eval()
     probabilities = []
     labels = []
@@ -62,9 +60,7 @@ def evaluate_pr_auc(model, loader, device):
     return float(average_precision_score(torch.cat(labels).numpy(), torch.cat(probabilities).numpy()))
 
 
-def train_graphsage(data,epochs=10,batch_size=512,num_neighbors=(25, 10),hidden_channels=128,embedding_dim=64,
-                    dropout=0.5,learning_rate=0.001,weight_decay=5e-4,seed=42,device="auto",
-):
+def train_graphsage(data, epochs=10, batch_size=512, num_neighbors=(25, 10), hidden_channels=128, embedding_dim=64, dropout=0.5, learning_rate=0.001, weight_decay=5e-4, seed=42, device="auto"):
     device = resolve_device(device)
     torch.manual_seed(seed)
     train_snapshot = build_temporal_snapshot(data, train_period[1], train_period)
@@ -74,21 +70,21 @@ def train_graphsage(data,epochs=10,batch_size=512,num_neighbors=(25, 10),hidden_
     model = GraphSAGEClassifier(data.num_node_features, hidden_channels, embedding_dim, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     best_epoch = 0
-    best_val_pr_auc = float("-inf")
+    best_val_average_precision = float("-inf")
     best_state = None
 
     for epoch in range(1, epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_pr_auc = evaluate_pr_auc(model, validation_loader, device)
-        print(f"Epoch {epoch:02d} | Loss: {train_loss:.4f} | Val PR-AUC: {val_pr_auc:.4f}")
-        if val_pr_auc > best_val_pr_auc:
+        val_average_precision = evaluate_average_precision(model, validation_loader, device)
+        print(f"Epoch {epoch:02d} | Loss: {train_loss:.4f} | Val average precision: {val_average_precision:.4f}")
+        if val_average_precision > best_val_average_precision:
             best_epoch = epoch
-            best_val_pr_auc = val_pr_auc
+            best_val_average_precision = val_average_precision
             best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
     model.load_state_dict(best_state)
     model.to(device)
-    return {"model": model, "best_epoch": best_epoch, "best_val_pr_auc": best_val_pr_auc}
+    return {"model": model, "best_epoch": best_epoch, "best_val_average_precision": best_val_average_precision}
 
 
 def save_encoder_checkpoint(encoder, path=default_checkpoint_path):
@@ -130,15 +126,9 @@ def parse_args():
 def main():
     args = parse_args()
     data = load_elliptic_data(args.data_root)
-    result = train_graphsage(
-        data,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        num_neighbors=tuple(args.num_neighbors),
-        device=args.device,
-    )
+    result = train_graphsage(data, epochs=args.epochs, batch_size=args.batch_size, num_neighbors=tuple(args.num_neighbors), device=args.device)
     checkpoint_path = save_encoder_checkpoint(result["model"].encoder, args.checkpoint)
-    print(f"Best validation PR-AUC: {result['best_val_pr_auc']:.4f}")
+    print(f"Best validation average precision: {result['best_val_average_precision']:.4f}")
     print(f"Restored epoch: {result['best_epoch']}")
     print(f"Encoder checkpoint: {checkpoint_path}")
 

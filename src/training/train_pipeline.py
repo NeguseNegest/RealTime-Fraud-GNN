@@ -25,7 +25,7 @@ def run_training_pipeline(args):
     mlflow.set_tracking_uri(args.tracking_uri)
     mlflow.set_experiment(args.experiment_name)
     data = load_elliptic_data(args.data_root)
-    parameters = {"epochs": args.epochs, "batch_size": args.batch_size, "learning_rate": args.learning_rate, "tree_depth": args.tree_depth, "hop_1_neighbors": args.num_neighbors[0], "hop_2_neighbors": args.num_neighbors[1], "device": args.device}
+    parameters = {"epochs": args.epochs, "batch_size": args.batch_size, "learning_rate": args.learning_rate, "tree_depth": args.tree_depth, "hop_1_neighbors": args.num_neighbors[0], "hop_2_neighbors": args.num_neighbors[1], "device": args.device, "threshold_metric": "validation_f1"}
 
     with mlflow.start_run() as run:
         mlflow.log_params(parameters)
@@ -34,9 +34,9 @@ def run_training_pipeline(args):
         hybrid_result = run_hybrid_training(data, gnn_result["model"].encoder, num_neighbors=tuple(args.num_neighbors), batch_size=args.batch_size, tree_depth=args.tree_depth, device=args.device)
         args.xgboost_model.parent.mkdir(parents=True, exist_ok=True)
         hybrid_result["model"].save_model(str(args.xgboost_model))
-        metrics = {"gnn_validation_pr_auc": gnn_result["best_val_pr_auc"], "gnn_best_epoch": gnn_result["best_epoch"], "baseline_validation_pr_auc": hybrid_result["baseline_validation"]["pr_auc"], "baseline_test_pr_auc": hybrid_result["baseline_test"]["pr_auc"], "hybrid_validation_pr_auc": hybrid_result["hybrid_validation"]["pr_auc"], "hybrid_test_pr_auc": hybrid_result["hybrid_test"]["pr_auc"], "hybrid_test_precision": hybrid_result["hybrid_test"]["precision"], "hybrid_test_recall": hybrid_result["hybrid_test"]["recall"], "hybrid_test_f1": hybrid_result["hybrid_test"]["f1"]}
+        metrics = {"gnn_validation_average_precision": gnn_result["best_val_average_precision"], "gnn_best_epoch": gnn_result["best_epoch"], "baseline_threshold": hybrid_result["baseline_threshold"], "hybrid_threshold": hybrid_result["threshold"], "baseline_validation_average_precision": hybrid_result["baseline_validation"]["average_precision"], "baseline_test_average_precision": hybrid_result["baseline_test"]["average_precision"], "hybrid_validation_average_precision": hybrid_result["hybrid_validation"]["average_precision"], "hybrid_test_average_precision": hybrid_result["hybrid_test"]["average_precision"], "hybrid_test_precision": hybrid_result["hybrid_test"]["precision"], "hybrid_test_recall": hybrid_result["hybrid_test"]["recall"], "hybrid_test_f1": hybrid_result["hybrid_test"]["f1"]}
         mlflow.log_metrics(metrics)
-        model_info = mlflow.pyfunc.log_model(name="ensemble", python_model=FraudEnsemble(), artifacts={"encoder": str(encoder_path.resolve()), "xgboost": str(args.xgboost_model.resolve())}, code_paths=[str(project_root / "src")], pip_requirements=str(project_root / "requirements.txt"), registered_model_name=args.registered_model_name)
+        model_info = mlflow.pyfunc.log_model(name="ensemble", python_model=FraudEnsemble(hybrid_result["threshold"]), artifacts={"encoder": str(encoder_path.resolve()), "xgboost": str(args.xgboost_model.resolve())}, code_paths=[str(project_root / "src")], pip_requirements=str(project_root / "requirements.txt"), registered_model_name=args.registered_model_name)
 
     return {"run_id": run.info.run_id, "model_uri": model_info.model_uri, "metrics": metrics}
 
@@ -62,8 +62,9 @@ def main():
     result = run_training_pipeline(parse_args())
     print(f"Run ID: {result['run_id']}")
     print(f"Model URI: {result['model_uri']}")
-    print(f"Validation PR-AUC: {result['metrics']['hybrid_validation_pr_auc']:.4f}")
-    print(f"Test PR-AUC: {result['metrics']['hybrid_test_pr_auc']:.4f}")
+    print(f"Validation average precision: {result['metrics']['hybrid_validation_average_precision']:.4f}")
+    print(f"Test average precision: {result['metrics']['hybrid_test_average_precision']:.4f}")
+    print(f"Validation threshold: {result['metrics']['hybrid_threshold']:.2f}")
 
 
 if __name__ == "__main__":

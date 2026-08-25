@@ -1,9 +1,8 @@
-"""Score Kafka transactions and print AML alerts."""
-
 import argparse
 import json
 import os
 from pathlib import Path
+import random
 import sys
 
 from kafka import KafkaConsumer
@@ -11,19 +10,18 @@ import mlflow
 import numpy as np
 import shap
 import torch
-from torch_geometric.utils import k_hop_subgraph
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.data.loader import default_data_root, load_elliptic_data
+from src.streaming.producer import schema_version
 
 
 default_bootstrap_servers = "localhost:9092"
 default_topic = "aml-transactions"
 default_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5001")
 default_model_name = "fraud-gnn-ensemble"
-default_threshold = 0.85
+default_num_neighbors = (25, 10)
 
 
 def load_latest_model(tracking_uri, model_name):
@@ -38,35 +36,67 @@ def create_consumer(bootstrap_servers, topic, group_id):
     return KafkaConsumer(topic, bootstrap_servers=bootstrap_servers, group_id=group_id, auto_offset_reset="earliest")
 
 
-def build_model_input(data, event, edge_cache, num_hops=2):
+def create_graph_state():
+    return {"features": {}, "incoming_neighbors": {}}
+
+
+def add_event(state, event):
     node_id = event["node_id"]
-    time_step = event["time_step"]
+    state["features"][node_id] = torch.tensor(event["features"], dtype=torch.float32)
+    state["incoming_neighbors"][node_id] = event["incoming_neighbors"]
 
-    if time_step not in edge_cache:
-        source, target = data.edge_index
-        available = data.time_step <= time_step
-        edge_cache[time_step] = data.edge_index[:, available[source] & available[target]]
 
-    node_ids, edge_index, target_nodes, _ = k_hop_subgraph(node_id, num_hops, edge_cache[time_step], relabel_nodes=True, num_nodes=data.num_nodes)
-    x = data.x[node_ids].clone()
-    x[target_nodes] = torch.tensor(event["features"], dtype=torch.float32)
-    return {"x": x.numpy(), "edge_index": edge_index.numpy(), "target_nodes": target_nodes.numpy()}
+def sample_neighborhood(state, node_id, num_neighbors=default_num_neighbors):
+    generator = random.Random(node_id)
+    node_ids = [node_id]
+    seen_nodes = {node_id}
+    edges = []
+    seen_edges = set()
+    frontier = [node_id]
+
+    for limit in num_neighbors:
+        next_frontier = []
+        for target in frontier:
+            sources = state["incoming_neighbors"][target]
+            if len(sources) > limit:
+                sources = generator.sample(sources, limit)
+            for source in sources:
+                edge = (source, target)
+                if edge not in seen_edges:
+                    edges.append(edge)
+                    seen_edges.add(edge)
+                if source not in seen_nodes:
+                    node_ids.append(source)
+                    seen_nodes.add(source)
+                    next_frontier.append(source)
+        frontier = next_frontier
+    return node_ids, edges
+
+
+def build_model_input(state, event, num_neighbors=default_num_neighbors):
+    add_event(state, event)
+    node_ids, edges = sample_neighborhood(state, event["node_id"], num_neighbors)
+    node_index = {node_id: index for index, node_id in enumerate(node_ids)}
+    x = torch.stack([state["features"][node_id] for node_id in node_ids])
+    if edges:
+        edge_index = torch.tensor([[node_index[source], node_index[target]] for source, target in edges], dtype=torch.long).t().contiguous()
+    else:
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+    return {"x": x.numpy(), "edge_index": edge_index.numpy(), "target_nodes": np.array([0])}
 
 
 def hybrid_features(python_model, model_input):
     x = torch.as_tensor(model_input["x"], dtype=torch.float32)
     edge_index = torch.as_tensor(model_input["edge_index"], dtype=torch.long)
     target_nodes = torch.as_tensor(model_input["target_nodes"], dtype=torch.long)
-
     with torch.no_grad():
         embeddings = python_model.encoder(x, edge_index)
-
     return np.concatenate((x[target_nodes].numpy(), embeddings[target_nodes].numpy()), axis=1)
 
 
 def feature_name(index, raw_feature_count):
     if index < raw_feature_count:
-        return f"raw_feature_{index}"
+        return f"local_feature_{index}"
     return f"embedding_{index - raw_feature_count}"
 
 
@@ -77,56 +107,53 @@ def explain_transaction(explainer, python_model, model_input):
     return [(feature_name(index, model_input["x"].shape[1]), float(values[index])) for index in indices]
 
 
-def consume_transactions(data, consumer, model, threshold=default_threshold, num_hops=2, max_messages=0):
+def consume_transactions(consumer, model, threshold=None, num_neighbors=default_num_neighbors, max_messages=0):
     python_model = model.unwrap_python_model()
+    threshold = python_model.threshold if threshold is None else threshold
     explainer = shap.TreeExplainer(python_model.classifier)
-    edge_cache = {}
+    state = create_graph_state()
     count = 0
 
     for message in consumer:
         event = json.loads(message.value)
-        model_input = build_model_input(data, event, edge_cache, num_hops)
-        probability = float(model.predict(model_input)[0])
+        if event.get("schema_version") != schema_version:
+            continue
+        model_input = build_model_input(state, event, num_neighbors)
+        score = float(model.predict(model_input)[0])
         count += 1
-        print(f"Transaction {event['node_id']} | Fraud probability: {probability:.4f}")
-
-        if probability > threshold:
-            print(f"AML ALERT | Node {event['node_id']} | Probability {probability:.4f}")
+        print(f"Transaction {event['node_id']} | Illicit transaction score: {score:.4f}")
+        if score > threshold:
+            print(f"AML REVIEW | Node {event['node_id']} | Score {score:.4f}")
             for name, value in explain_transaction(explainer, python_model, model_input):
                 print(f"  {name}: {value:+.4f}")
-
         if max_messages and count >= max_messages:
             break
-
     return count
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Consume Kafka transactions and score them for fraud.")
+    parser = argparse.ArgumentParser(description="Consume Kafka transactions and score them for illicit activity.")
     parser.add_argument("--bootstrap-servers", default=default_bootstrap_servers)
     parser.add_argument("--topic", default=default_topic)
     parser.add_argument("--group-id", default="fraud-gnn-consumer")
     parser.add_argument("--tracking-uri", default=default_tracking_uri)
     parser.add_argument("--model-name", default=default_model_name)
-    parser.add_argument("--data-root", type=Path, default=default_data_root)
-    parser.add_argument("--threshold", type=float, default=default_threshold)
-    parser.add_argument("--num-hops", type=int, default=2)
+    parser.add_argument("--threshold", type=float)
+    parser.add_argument("--num-neighbors", type=int, nargs=2, default=default_num_neighbors)
     parser.add_argument("--max-messages", type=int, default=0, help="Number of messages to consume. Zero keeps listening.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    data = load_elliptic_data(args.data_root)
     model, version = load_latest_model(args.tracking_uri, args.model_name)
     consumer = create_consumer(args.bootstrap_servers, args.topic, args.group_id)
-    print(f"Loaded {args.model_name} version {version}")
-
+    threshold = model.unwrap_python_model().threshold if args.threshold is None else args.threshold
+    print(f"Loaded {args.model_name} version {version} with threshold {threshold:.2f}")
     try:
-        count = consume_transactions(data, consumer, model, args.threshold, args.num_hops, args.max_messages)
+        count = consume_transactions(consumer, model, threshold, tuple(args.num_neighbors), args.max_messages)
     finally:
         consumer.close()
-
     print(f"Consumed {count} transactions")
 
 

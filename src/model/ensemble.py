@@ -9,6 +9,8 @@ from src.training.train_gnn import load_encoder_checkpoint
 
 
 class FraudEnsemble(mlflow.pyfunc.PythonModel):
+    def __init__(self, threshold=0.5):
+        self.threshold = threshold
 
     def load_context(self, context):
         self.encoder = load_encoder_checkpoint(context.artifacts["encoder"], "cpu")

@@ -1,5 +1,6 @@
 src/data/exploratory.py
 projectplan.tex
+.DS_Store
 .venv/
 data/raw/
 artifacts/

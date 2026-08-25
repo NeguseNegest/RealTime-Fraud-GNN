@@ -1,1 +1,11 @@
-%% Real-time AML pipeline architecture diagram
+flowchart LR
+    data[Elliptic dataset] --> training[Train GraphSAGE and XGBoost]
+    training --> mlflow[(MLflow)]
+    data --> producer[Kafka producer]
+    producer --> kafka[(Kafka topic)]
+    kafka --> consumer[Kafka consumer]
+    mlflow --> consumer
+    consumer --> scoring[Score transaction]
+    scoring --> decision{Above threshold?}
+    decision -- Yes --> alert[AML review and SHAP explanation]
+    decision -- No --> next[Wait for next transaction]
